@@ -200,9 +200,8 @@ static inline void sq_prod_submit_n(struct shared_queue *q, unsigned count)
 	unsigned prod;
 
 	prod = READ_ONCE(*q->prod) + count;
-	if (prod - q->cached_prod > 0)
-		return;
-	__sq_store_release_prod(q, prod);
+	if (q->cached_prod - prod < q->entries)
+		__sq_store_release_prod(q, prod);
 }
 
 #endif /* _UAPI_MISC_SHQUEUE_H */
