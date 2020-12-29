@@ -74,7 +74,7 @@ parse_cmdline(int argc, char **argv)
 			usage(basename(argv[0]));
 		}
 	}
-	printf("using queue %d\n", opt.queue_id);
+	printf("requesting queue %d\n", opt.queue_id);
 }
 
 static struct zctap_ctx *
@@ -216,7 +216,7 @@ udp_connect(int fd, const char *hostname, short port)
 	set_blocking_mode(fd, true);
 }
 
-#define SO_NOTIFY 69
+#define SO_NOTIFY 	71
 
 #define BATCH_SIZE	32
 
@@ -312,17 +312,16 @@ handle_read(struct zctap_skq *skq, struct zctap_ifq *ifq)
 static void
 recv_loop(int fd, struct zctap_skq *skq, struct zctap_ifq *ifq)
 {
-	struct epoll_event ev[1];
-	int i, n, ep;
-	bool done;
+	struct epoll_event ev;
+	int n, ep;
 
-	ev[0].events = EPOLLIN;
+	ev.events = EPOLLIN;
 	CHK_SYS(ep = epoll_create(1));
-	CHK_SYS(epoll_ctl(ep, EPOLL_CTL_ADD, fd, &ev[0]));
+	CHK_SYS(epoll_ctl(ep, EPOLL_CTL_ADD, fd, &ev));
 
 	printf("recv loop\n");
 	while (!run.stop) {
-		n = epoll_wait(ep, ev, array_size(ev), -1);
+		n = epoll_wait(ep, &ev, 1, -1);
 		if (n == 0)
 			continue;
 		if (n == -1) {
@@ -330,19 +329,16 @@ recv_loop(int fd, struct zctap_skq *skq, struct zctap_ifq *ifq)
 				continue;
 			ERROR_HERE(1, errno, "epoll_wait");
 		}
-		done = true;
-		for (i = 0; i < n; i++) {
-			if (ev[i].events & EPOLLIN)
-				done = handle_read(skq, ifq);
-			if (done && ev[i].events & EPOLLRDHUP) {
-				/* handle data before exiting */
-				printf("SAW EPOLLRDHUP, break..\n");
-				goto out;
-			}
-			if (done && ev[i].events & EPOLLHUP) {
-				printf("SAW EPOLLHUP, break..\n");
-				goto out;
-			}
+		if (ev.events & EPOLLIN)
+			handle_read(skq, ifq);
+		if (ev.events & EPOLLRDHUP) {
+			/* handle data before exiting */
+			printf("SAW EPOLLRDHUP, break..\n");
+			goto out;
+		}
+		if (ev.events & EPOLLHUP) {
+			printf("SAW EPOLLHUP, break..\n");
+			goto out;
 		}
 	}
 out:
@@ -367,6 +363,7 @@ test_recv(const char *hostname, short port)
 	CHK_ERR(zctap_register_memory(ctx, pktbuf, sz, opt.memtype));
 	CHK_ERR(zctap_open_ifq(&ifq, ctx, opt.queue_id, opt.fill_entries));
 	zctap_populate_ring(ifq, (uint64_t)pktbuf, opt.fill_entries);
+	printf("actual queue %d\n", zctap_ifq_id(ifq));
 	printf("pktdata:  [%p:%p]\n", pktbuf, pktbuf + sz);
 
 	CHK_SYS(fd = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP));

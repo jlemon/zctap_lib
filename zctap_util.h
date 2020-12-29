@@ -26,6 +26,15 @@
 		ERROR_HERE(1, errno, "%s", #fcn);			\
 })
 
+#define CHK_INTR(fcn, label) ({						\
+	if ((fcn) < 0) {						\
+		if (errno == EINTR)					\
+			goto label;					\
+		ERROR_HERE(1, errno, "%s", #fcn);			\
+	}								\
+})
+
+
 #define CHK_ERR(fcn) ({							\
 	int err = fcn;							\
 	if (err < 0)							\

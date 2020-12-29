@@ -6,13 +6,24 @@
 #include <getopt.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <time.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <sys/epoll.h>
 
 #include "zctap_lib.h"
+
+struct {
+	bool stop;
+	unsigned long bytes_submitted;
+	unsigned long bytes_reclaimed;
+	unsigned long wait_ns;
+	unsigned long wait_count;
+	int notify_count;;
+} run;
 
 struct node {
 	int family;
@@ -29,6 +40,7 @@ struct {
 	int fill_entries;
 	int queue_id;
 	int memtype;
+	bool udp_proto;
 } opt = {
 	.ifname		= "eth0",
 	.sz		= 1024 * 1024 * 2,
@@ -44,7 +56,7 @@ usage(const char *prog)
 	error(1, 0, "Usage: %s [options] hostname port", prog);
 }
 
-#define OPTSTR "i:s:q:m"
+#define OPTSTR "i:s:q:mu"
 
 static void
 parse_cmdline(int argc, char **argv)
@@ -65,10 +77,28 @@ parse_cmdline(int argc, char **argv)
 		case 'm':
 			opt.memtype = MEMTYPE_CUDA;
 			break;
+		case 'u':
+			opt.udp_proto = true;
+			break;
 		default:
 			usage(basename(argv[0]));
 		}
 	}
+}
+
+unsigned long
+nsec(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec * 1000000000UL + ts.tv_nsec;
+}
+
+unsigned long
+elapsed(unsigned long start)
+{
+	return nsec() - start;
 }
 
 static struct zctap_ctx *
@@ -113,7 +143,7 @@ set_blocking_mode(int fd, bool on)
 	else
 		flag |= O_NONBLOCK;
 
-	CHK_ERR(fcntl(fd, F_SETFL, flag));
+	CHK_SYS(fcntl(fd, F_SETFL, flag));
 
 	flag = fcntl(fd, F_GETFL);
 	CHECK(!(flag & O_NONBLOCK) == on);
@@ -189,7 +219,7 @@ set_port(struct node *node, int port)
 }
 
 static void
-tcp_connect(int fd, const char *hostname, short port)
+net_connect(int fd, const char *hostname, short port)
 {
 	struct node node;
 	int one = 1;
@@ -201,24 +231,24 @@ tcp_connect(int fd, const char *hostname, short port)
 
 	set_port(&node, port);
 
-	CHK_ERR(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)));
-	CHK_ERR(setsockopt(fd, SOL_SOCKET, SO_ZEROCOPY, &one, sizeof(one)));
+	CHK_SYS(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)));
+	CHK_SYS(setsockopt(fd, SOL_SOCKET, SO_ZEROCOPY, &one, sizeof(one)));
 
-	CHK_ERR(connect(fd, (struct sockaddr *)&node.addr, node.addrlen));
+	CHK_SYS(connect(fd, (struct sockaddr *)&node.addr, node.addrlen));
 
 	set_blocking_mode(fd, true);
 }
 
-#define SO_NOTIFY 69
+#define SO_NOTIFY	71
 
 #define N_SLICES	4
 
 static void
 send_loop(int fd, struct zctap_skq *skq, uint64_t addr)
 {
-        uint8_t cbuf[CMSG_SPACE(sizeof(uint64_t))];
+	uint8_t cbuf[CMSG_SPACE(sizeof(uint64_t))];
 	bool busy[N_SLICES];
-        struct cmsghdr *cmsg;
+	struct cmsghdr *cmsg;
 	struct iovec iov;
 	struct msghdr msg = {
 		.msg_iov = &iov,
@@ -244,39 +274,46 @@ send_loop(int fd, struct zctap_skq *skq, uint64_t addr)
 	slice = 0;
 
 	ev.events = EPOLLRDBAND;
-	CHK_ERR(ep = epoll_create(1));
-	CHK_ERR(epoll_ctl(ep, EPOLL_CTL_ADD, fd, &ev));
+	CHK_SYS(ep = epoll_create(1));
+	CHK_SYS(epoll_ctl(ep, EPOLL_CTL_ADD, fd, &ev));
 
 	printf("send loop\n");
-	for (;;) {
-		bool waited;
+	while (!run.stop) {
+		unsigned long wait_ns;
 
-		waited = false;
+		wait_ns = 0;
 		while (busy[slice]) {
 			if (zctap_get_cq_batch(skq, &notify, 1)) {
 				n = *notify % N_SLICES;
 				CHECK_MSG(busy[n], "Slice %d !busy\n", n);
 				busy[n] = false;
+				run.bytes_reclaimed += (count * sz);
+				run.notify_count--;
 			} else {
-				CHECK(!waited);
-				CHK_ERR(n = epoll_wait(ep, &ev, 1, -1));
+				CHECK(!wait_ns);
+				wait_ns = nsec();
+				CHK_INTR(n = epoll_wait(ep, &ev, 1, -1), out);
+				run.wait_ns += elapsed(wait_ns);
+				run.wait_count++;
 				CHECK(n != 0);
-				waited = true;
 			}
 		}
 		base = addr + (slice * count * sz);
 		for (i = 0; i < count - 1; i++) {
 			iov.iov_base = (void *)(base + i * sz);
-			CHK_ERR(n = sendmsg(fd, &msg, MSG_ZCTAP));
+			CHK_INTR(n = sendmsg(fd, &msg, MSG_ZCTAP), out);
 			CHECK(n == sz);
+			run.bytes_submitted += sz;
 		}
 
 		iov.iov_base = (void *)(base + i * sz);
 		msg.msg_controllen = cmsg->cmsg_len;
 		*data = loopc++;
-		CHK_ERR(n = sendmsg(fd, &msg, MSG_ZCTAP));
+		CHK_SYS(n = sendmsg(fd, &msg, MSG_ZCTAP));
 		CHECK(n == sz);
 		msg.msg_controllen = 0;
+		run.bytes_submitted += sz;
+		run.notify_count++;
 
 		busy[slice] = true;
 		slice = (slice + 1) == N_SLICES ? 0 : slice + 1;
@@ -285,8 +322,47 @@ send_loop(int fd, struct zctap_skq *skq, uint64_t addr)
 			n = *notify % N_SLICES;
 			CHECK_MSG(busy[n], "Slice %d !busy\n", n);
 			busy[n] = false;
+			run.bytes_reclaimed += (count * sz);
+			run.notify_count--;
 		}
 	}
+out:
+	;
+}
+
+#define ns_to_sec(ns)	((long double)ns / 1000000000UL)
+#define safediv(n, d)	((d) ? (long double)(n) / (d) : 0)
+
+void zctap_debug_skq(struct zctap_skq *skq);
+
+static void
+statistics(unsigned long elapsed_ns)
+{
+	static const char *scale[] = {
+		"bytes", "KB", "MB", "GB",
+	};
+	static const char *uscale[] = {
+		"ns", "us", "ms", "sec",
+	};
+	long double seconds;
+	long double rate;
+	int idx;
+
+	seconds = ns_to_sec(elapsed_ns);
+	rate = run.bytes_submitted / seconds;
+	for (idx = 0; rate >= 1000; idx++)
+		rate /= 1000;
+	printf("\n");
+	printf("%ld bytes in %.4Lg seconds, %.4Lg %s/sec\n",
+		run.bytes_submitted, seconds, rate, scale[idx]);
+
+	rate = safediv(run.wait_ns, run.wait_count);
+	for (idx = 0; rate >= 1000; idx++)
+		rate /= 1000;
+	printf("Waited %ld times %ld ns, %.4Lg %s/wait\n",
+		run.wait_count, run.wait_ns, rate, uscale[idx]);
+	printf("Reclaimed %ld bytes,  oustanding notifies : %d\n",
+		run.bytes_reclaimed, run.notify_count);
 }
 
 static void
@@ -296,6 +372,7 @@ test_send(const char *hostname, short port)
 	struct zctap_ifq *ifq;
 	struct zctap_skq *skq;
 	void *ptr[1], *pktbuf;
+	unsigned long stamp;
 	size_t sz;
 	int fd;
 
@@ -308,15 +385,37 @@ test_send(const char *hostname, short port)
 	CHK_ERR(zctap_open_ifq(&ifq, ctx, opt.queue_id, opt.fill_entries));
 	zctap_populate_ring(ifq, (uint64_t)pktbuf, opt.fill_entries);
 
-	CHK_SYS(fd = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP));
+	if (opt.udp_proto)
+		CHK_SYS(fd = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP));
+	else
+		CHK_SYS(fd = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP));
 	CHK_ERR(zctap_attach_socket(&skq, ctx, fd, opt.nentries));
 
-	tcp_connect(fd, hostname, port);
+	net_connect(fd, hostname, port);
 
+	stamp = nsec();
 	send_loop(fd, skq, (uint64_t)ptr[0]);
+	stamp = elapsed(stamp);
+	zctap_debug_skq(skq);
+	statistics(stamp);
 
 	zctap_close_ifq(&ifq);
 	close_ctx(ctx, array_size(ptr), ptr);
+}
+
+static void
+handle_signal(int sig)
+{
+	run.stop = true;
+}
+
+static void
+setup(void)
+{
+	struct sigaction sa = {
+		.sa_handler = handle_signal,
+	};
+	sigaction(SIGINT, &sa, NULL);
 }
 
 int
@@ -330,6 +429,7 @@ main(int argc, char **argv)
 		usage(basename(argv[0]));
 	hostname = argv[optind];
 	port = atoi(argv[optind + 1]);
+	setup();
 
 	test_send(hostname, port);
 
