@@ -45,11 +45,10 @@ struct zctap_attach_param {
 };
 
 struct zctap_socket_param {
-       unsigned resv;
-       unsigned op_type;
-       union {
+	unsigned resv;
+	int fd;
+	union {
 		struct {
-			int ctx_fd;
 			struct zctap_user_queue rx;
 			struct zctap_user_queue cq;
 		};
@@ -85,7 +84,7 @@ struct zctap_ctx_param {
 #define ZCTAP_CTX_IOCTL_ATTACH_DEV	_IOR( 0, 1, int)
 #define ZCTAP_CTX_IOCTL_BIND_QUEUE	_IOWR(0, 2, struct zctap_ifq_param)
 #define ZCTAP_CTX_IOCTL_ATTACH_REGION	_IOW( 0, 3, struct zctap_attach_param)
-#define ZCTAP_MEM_IOCTL_ADD_REGION	_IOR( 0, 4, struct zctap_region_param)
-#define ZCTAP_SOCK_IOCTL_ATTACH_QUEUES	(SIOCPROTOPRIVATE + 0)
+#define ZCTAP_CTX_IOCTL_ATTACH_SOCKET	_IOW( 0, 4, struct zctap_socket_param)
+#define ZCTAP_MEM_IOCTL_ADD_REGION	_IOR( 0, 5, struct zctap_region_param)
 
 #endif /* _UAPI_MISC_ZCTAP_H */
