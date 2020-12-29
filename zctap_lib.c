@@ -27,6 +27,7 @@ struct zctap_skq {
 	struct shared_queue rx;
 	struct shared_queue cq;
 	struct shared_queue meta;
+	int ctx_fd;	/* XXX */
 };
 
 struct zctap_ifq {
@@ -44,6 +45,23 @@ struct zctap_ctx {
 	unsigned ifindex;
 	struct zctap_mem *mem;
 };
+
+static void
+zctap_debug_queue(const char *name, struct shared_queue *q)
+{
+	printf("queue %s:\n", name);
+	printf("  producer: %u  %u\n", q->cached_prod, *q->prod);
+	printf("  consumer: %u  %u\n", q->cached_cons, *q->cons);
+}
+
+void
+zctap_debug_skq(struct zctap_skq *skq)
+{
+	zctap_debug_queue("RX", &skq->rx);
+	zctap_debug_queue("CQ", &skq->cq);
+	if (skq->meta.entries)
+		zctap_debug_queue("META", &skq->meta);
+}
 
 static int
 zctap_mmap_queue(int fd, struct shared_queue *q, struct zctap_user_queue *u)
@@ -71,7 +89,7 @@ zctap_mmap_queue(int fd, struct shared_queue *q, struct zctap_user_queue *u)
 
 static int
 zctap_mmap_socket(int fd, struct zctap_skq *skq,
-		   struct zctap_socket_param *p)
+		  struct zctap_socket_param *p)
 {
 	int rc;
 
@@ -199,7 +217,7 @@ zctap_detach_socket(struct zctap_skq **skqp)
 
 int
 zctap_attach_socket(struct zctap_skq **skqp, struct zctap_ctx *ctx, int fd,
-		     int nentries)
+		    int nentries)
 {
 	struct zctap_socket_param p;
 	struct zctap_skq *skq;
@@ -210,9 +228,10 @@ zctap_attach_socket(struct zctap_skq **skqp, struct zctap_ctx *ctx, int fd,
 	if (!skq)
 		return -ENOMEM;
 	memset(skq, 0, sizeof(*skq));
+	skq->ctx_fd = ctx->fd;
 
 	memset(&p, 0, sizeof(p));
-	p.ctx_fd = ctx->fd;
+	p.fd = fd;
 
 	p.rx.elt_sz = sizeof(struct iovec);
 	p.rx.entries = nentries;
@@ -229,8 +248,8 @@ zctap_attach_socket(struct zctap_skq **skqp, struct zctap_ctx *ctx, int fd,
 		err_exit("setsockopt(SO_BINDTOIFINDEX)");
 
 	/* attaches sk to ctx and sets up custom data_ready hook */
-	if (ioctl(fd, ZCTAP_SOCK_IOCTL_ATTACH_QUEUES, &p))
-		err_exit("ioctl(ATTACH_QUEUES)");
+	if (ioctl(ctx->fd, ZCTAP_CTX_IOCTL_ATTACH_SOCKET, &p))
+		err_exit("ioctl(ATTACH_SOCKET)");
 
 	err = zctap_mmap_socket(fd, skq, &p);
 	if (err)
@@ -243,7 +262,7 @@ zctap_attach_socket(struct zctap_skq **skqp, struct zctap_ctx *ctx, int fd,
 
 int
 zctap_add_meta(struct zctap_skq *skq, int fd, void *addr, size_t len,
-		int nentries, int meta_len)
+	       int nentries, int meta_len)
 {
 	struct zctap_socket_param p;
 	int rc;
@@ -252,6 +271,7 @@ zctap_add_meta(struct zctap_skq *skq, int fd, void *addr, size_t len,
 		return -EALREADY;
 
 	memset(&p, 0, sizeof(p));
+	p.fd = fd;
 	p.resv = 1;
 	p.iov.iov_base = addr;
 	p.iov.iov_len = len;
@@ -260,7 +280,7 @@ zctap_add_meta(struct zctap_skq *skq, int fd, void *addr, size_t len,
 	p.meta_len = meta_len;
 
 	/* attaches sk to ctx and sets up custom data_ready hook */
-	if (ioctl(fd, ZCTAP_SOCK_IOCTL_ATTACH_QUEUES, &p))
+	if (ioctl(skq->ctx_fd, ZCTAP_CTX_IOCTL_ATTACH_SOCKET, &p))
 		err_exit("ioctl(ATTACH_META)");
 
 	rc = zctap_mmap_queue(fd, &skq->meta, &p.meta);
@@ -294,7 +314,7 @@ zctap_ifq_id(struct zctap_ifq *ifq)
 
 int
 zctap_open_ifq(struct zctap_ifq **ifqp, struct zctap_ctx *ctx,
-		int queue_id, int fill_entries)
+	       int queue_id, int fill_entries)
 {
 	struct zctap_ifq_param p;
 	struct zctap_ifq *ifq;
@@ -309,6 +329,10 @@ zctap_open_ifq(struct zctap_ifq **ifqp, struct zctap_ctx *ctx,
 	p.queue_id = queue_id;
 	p.fill.elt_sz = sizeof(uint64_t);
 	p.fill.entries = fill_entries;
+
+	p.hdsplit = ZCTAP_SPLIT_OFFSET;
+//	p.split_offset = (14 + 40 + (20 + 20));		// TCP6
+	p.split_offset = (14 + 40 + 8);			// UDP6
 
 	if (ioctl(ctx->fd, ZCTAP_CTX_IOCTL_BIND_QUEUE, &p)) {
 		err = -errno;
@@ -346,7 +370,7 @@ zctap_attach_region(struct zctap_ctx *ctx, struct zctap_mem *mem, int idx)
 
 int
 zctap_register_memory(struct zctap_ctx *ctx, void *va, size_t size,
-		       enum zctap_memtype memtype)
+		      enum zctap_memtype memtype)
 {
 	int idx, err;
 
@@ -410,7 +434,7 @@ out:
 
 int
 zctap_add_memarea(struct zctap_mem *mem, void *va, size_t size,
-		   enum zctap_memtype memtype)
+		  enum zctap_memtype memtype)
 {
 	struct zctap_region_param p;
 	int idx;
