@@ -577,12 +577,13 @@ int
 util_create_region(void *ptr, size_t sz, enum zctap_memtype memtype)
 {
 	int err = -EOPNOTSUPP;
-	int fd;
 
 	if (memtype == MEMTYPE_HOST)
 		err = zctap_create_host_region(ptr, sz);
 #ifdef USE_CUDA
 	else if (memtype == MEMTYPE_CUDA) {
+		int fd;
+
 		fd = util_create_cuda_dmabuf(ptr, sz);
 		if (fd < 0)
 			return fd;
