@@ -3,12 +3,14 @@
 #include <stdio.h>
 #include <libgen.h>
 #include <getopt.h>
+#include <net/if.h>
 
 #include "zctap_lib.h"
 
 struct {
 	const char *ifname;
 	int memtype;
+	bool debug;
 } opt = {
 	.ifname		= "eth0",
 	.memtype	= MEMTYPE_HOST,
@@ -20,7 +22,7 @@ usage(const char *prog)
 	error(1, 0, "Usage: %s [options]", prog);
 }
 
-#define OPTSTR "i:m"
+#define OPTSTR "di:m"
 
 static void
 parse_cmdline(int argc, char **argv)
@@ -29,6 +31,9 @@ parse_cmdline(int argc, char **argv)
 
 	while ((c = getopt(argc, argv, OPTSTR)) != -1) {
 		switch (c) {
+		case 'd':
+			opt.debug = true;
+			break;
 		case 'i':
 			opt.ifname = optarg;
 			break;
@@ -62,123 +67,136 @@ test_two(const char *ifname)
 }
 
 static void
+test_region(size_t sz)
+{
+	void *ptr;
+	int r;
+
+	CHECK(ptr = util_alloc_memory(sz, opt.memtype));
+	CHK_ERR(r = util_create_region(ptr, sz, opt.memtype));
+
+	CHK_SYS(close(r));
+	util_free_memory(ptr, sz, opt.memtype);
+}
+
+static void
 test_mem(const char *ifname, size_t sz)
 {
 	struct zctap_ctx *ctx = NULL;
 	void *ptr;
+	int r;
 
-	ptr = zctap_alloc_memory(sz, opt.memtype);
-	CHECK(ptr);
-
+	CHECK(ptr = util_alloc_memory(sz, opt.memtype));
+	CHK_ERR(r = util_create_region(ptr, sz, opt.memtype));
 	CHK_ERR(zctap_open_ctx(&ctx, ifname));
-	CHK_ERR(zctap_register_memory(ctx, ptr, sz, opt.memtype));
+
+	CHK_ERR(zctap_attach_region(ctx, r));
 
 	zctap_close_ctx(&ctx);
-	zctap_free_memory(ptr, sz, opt.memtype);
+	CHK_SYS(close(r));
+	util_free_memory(ptr, sz, opt.memtype);
 }
 
 static void
 test_mem2(const char *ifname, size_t sz)
 {
 	struct zctap_ctx *ctx = NULL;
-	void *ptr, *ptr2;
+	void *ptr1, *ptr2;
 
-	ptr = zctap_alloc_memory(sz, opt.memtype);
-	CHECK(ptr);
-	ptr2 = zctap_alloc_memory(sz, opt.memtype);
-	CHECK(ptr2);
+	CHECK(ptr1 = util_alloc_memory(sz, opt.memtype));
+	CHECK(ptr2 = util_alloc_memory(sz, opt.memtype));
 
 	CHK_ERR(zctap_open_ctx(&ctx, ifname));
-	CHK_ERR(zctap_register_memory(ctx, ptr, sz, opt.memtype));
-	CHK_ERR(zctap_register_memory(ctx, ptr2, sz, opt.memtype));
+	CHK_ERR(util_register_memory(ctx, ptr1, sz, opt.memtype));
+	CHK_ERR(util_register_memory(ctx, ptr2, sz, opt.memtype));
 
 	zctap_close_ctx(&ctx);
-	zctap_free_memory(ptr, sz, opt.memtype);
-	zctap_free_memory(ptr2, sz, opt.memtype);
+	util_free_memory(ptr1, sz, opt.memtype);
+	util_free_memory(ptr2, sz, opt.memtype);
 }
-
 
 static void
 test_sharing(const char *ifname, size_t sz)
 {
 	struct zctap_ctx *ctx1 = NULL, *ctx2 = NULL;
-	struct zctap_mem *mem = NULL;
 	void *ptr;
-	int idx;
+	int r;
 
-	CHK_ERR(zctap_open_memarea(&mem));
-	ptr = zctap_alloc_memory(sz, opt.memtype);
-	CHECK(ptr);
-	idx = zctap_add_memarea(mem, ptr, sz, opt.memtype);
-	CHECK(idx > 0);
+	CHECK(ptr = util_alloc_memory(sz, opt.memtype));
+	CHK_ERR(r = util_create_region(ptr, sz, opt.memtype));
 
 	CHK_ERR(zctap_open_ctx(&ctx1, ifname));
-	CHK_ERR(zctap_attach_region(ctx1, mem, idx));
+	CHK_ERR(zctap_attach_region(ctx1, r));
 
 	CHK_ERR(zctap_open_ctx(&ctx2, ifname));
-	CHK_ERR(zctap_attach_region(ctx2, mem, idx));
+	CHK_ERR(zctap_attach_region(ctx2, r));
 
 	zctap_close_ctx(&ctx1);
 
 	CHK_ERR(zctap_open_ctx(&ctx1, ifname));
-	CHK_ERR(zctap_attach_region(ctx1, mem, idx));
+	CHK_ERR(zctap_attach_region(ctx1, r));
 
 	zctap_close_ctx(&ctx2);
 	zctap_close_ctx(&ctx1);
-	zctap_close_memarea(&mem);
-	zctap_free_memory(ptr, sz, opt.memtype);
+	CHK_SYS(close(r));
+	util_free_memory(ptr, sz, opt.memtype);
 }
 
 static void
 test_ordering(const char *ifname, size_t sz)
 {
 	struct zctap_ctx *ctx = NULL;
-	struct zctap_mem *mem = NULL;
 	void *ptr, *ptr2;
-	int idx, err;
+	int r, r2;
+	int err;
 
-	CHK_ERR(zctap_open_memarea(&mem));
-	ptr = zctap_alloc_memory(sz, opt.memtype);
-	CHECK(ptr);
-	idx = zctap_add_memarea(mem, ptr, sz, opt.memtype);
-	CHECK(idx > 0);
+	CHECK(ptr = util_alloc_memory(sz, opt.memtype));
+	CHK_ERR(r = util_create_region(ptr, sz, opt.memtype));
 
 	CHK_ERR(zctap_open_ctx(&ctx, ifname));
-	CHK_ERR(zctap_attach_region(ctx, mem, idx));
+	CHK_ERR(zctap_attach_region(ctx, r));
 
 	/* can't add memory region more than once */
-	err = zctap_attach_region(ctx, mem, idx);
+	err = zctap_attach_region(ctx, r);
 	CHECK(err == -EEXIST);
 
-	/* adding same memory region to internal memarea is not allowed */
-	err = zctap_register_memory(ctx, ptr, sz, opt.memtype);
-	CHECK(err == -EEXIST);
+	/* creating region over existing one is not allowed */
+	r2 = util_create_region(ptr, sz, opt.memtype);
+	CHECK(r2 == -EEXIST);
 
-	/* close memarea while in use */
-	zctap_close_memarea(&mem);
+	/* close region while in use */
+	CHK_SYS(close(r));
 
-	ptr2 = zctap_alloc_memory(sz, opt.memtype);
-	CHECK(ptr2);
-	CHK_ERR(zctap_register_memory(ctx, ptr2, sz, opt.memtype));
+	CHECK(ptr2 = util_alloc_memory(sz, opt.memtype));
+	CHK_ERR(util_register_memory(ctx, ptr2, sz, opt.memtype));
 
 	/* free memory while in use */
-	zctap_free_memory(ptr2, sz, opt.memtype);
+	util_free_memory(ptr2, sz, opt.memtype);
 
 	zctap_close_ctx(&ctx);
-	zctap_free_memory(ptr, sz, opt.memtype);
+	util_free_memory(ptr, sz, opt.memtype);
 }
+
+#define T(fcn, ...) do {						\
+	if (opt.debug) {						\
+		fprintf(stderr, "Calling %s...\n", #fcn);		\
+		sleep(2);						\
+	}								\
+	fcn(__VA_ARGS__);						\
+} while (0)
 
 int
 main(int argc, char **argv)
 {
 	parse_cmdline(argc, argv);
 
-	test_one(opt.ifname);
-	test_two(opt.ifname);
-	test_mem(opt.ifname, 1024 * 64);
-	test_mem2(opt.ifname, 1024 * 64);
-	test_sharing(opt.ifname, 1024 * 64);
-	test_ordering(opt.ifname, 1024 * 64);
+	T(test_one, opt.ifname);
+	T(test_two, opt.ifname);
+	T(test_region, 1024 * 64);
+	T(test_mem, opt.ifname, 1024 * 64);
+	T(test_mem2, opt.ifname, 1024 * 64);
+	T(test_sharing, opt.ifname, 1024 * 64);
+	T(test_ordering, opt.ifname, 1024 * 64);
 
 	return 0;
 }

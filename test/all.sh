@@ -1,7 +1,6 @@
 #!/bin/sh
 
-./memarea
+./region
 ./context
-./dmamap
 ./socket
 ./netqueue

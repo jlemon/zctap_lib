@@ -61,11 +61,8 @@ setup_ctx(int count, void *ptr[])
 	CHK_ERR(zctap_open_ctx(&ctx, opt.ifname));
 
 	for (i = 0; i < count; i++) {
-		ptr[i] = zctap_alloc_memory(opt.sz, opt.memtype);
-		CHECK(ptr[i]);
-
-		CHK_ERR(zctap_register_memory(ctx, ptr[i], opt.sz,
-					       opt.memtype));
+		CHECK(ptr[i] = util_alloc_memory(opt.sz, opt.memtype));
+		CHK_ERR(util_register_memory(ctx, ptr[i], opt.sz, opt.memtype));
 	}
 
 	return ctx;
@@ -79,12 +76,13 @@ close_ctx(struct zctap_ctx *ctx, int count, void *ptr[])
 	zctap_close_ctx(&ctx);
 
 	for (i = 0; i < count; i++)
-		zctap_free_memory(ptr[i], opt.sz, opt.memtype);
+		util_free_memory(ptr[i], opt.sz, opt.memtype);
 }
 
 static void
 test_one(void)
 {
+	struct zctap_socket_param socket_param;
 	struct zctap_ctx *ctx = NULL;
 	struct zctap_skq *skq = NULL;
 	void *ptr[2];
@@ -93,7 +91,8 @@ test_one(void)
 	CHK_SYS(fd = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP));
 
 	ctx = setup_ctx(array_size(ptr), ptr);
-	CHK_ERR(zctap_attach_socket(&skq, ctx, fd, opt.nentries));
+	zctap_init_socket_param(&socket_param, opt.nentries);
+	CHK_ERR(zctap_attach_socket(&skq, ctx, fd, &socket_param));
 	
 	zctap_detach_socket(&skq);
 	close_ctx(ctx, array_size(ptr), ptr);
@@ -103,6 +102,7 @@ test_one(void)
 static void
 test_ordering(void)
 {
+	struct zctap_socket_param socket_param;
 	struct zctap_ctx *ctx = NULL;
 	struct zctap_skq *skq = NULL;
 	void *ptr[2];
@@ -111,7 +111,8 @@ test_ordering(void)
 	CHK_SYS(fd = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP));
 
 	ctx = setup_ctx(array_size(ptr), ptr);
-	CHK_ERR(zctap_attach_socket(&skq, ctx, fd, opt.nentries));
+	zctap_init_socket_param(&socket_param, opt.nentries);
+	CHK_ERR(zctap_attach_socket(&skq, ctx, fd, &socket_param));
 	
 	close_ctx(ctx, array_size(ptr), ptr);
 
