@@ -41,7 +41,7 @@
 		ERROR_HERE(1, -err, "%s", #fcn);			\
 })
 
-#define CHECK_MSG(val, ...) ({						\
+#define CHK_MSG(val, ...) ({						\
 	if (!(val))							\
 		ERROR_HERE(1, 0, __VA_ARGS__);				\
 })

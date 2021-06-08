@@ -68,11 +68,9 @@ setup_ctx(int count, void *ptr[])
 	CHK_ERR(zctap_open_ctx(&ctx, opt.ifname));
 
 	for (i = 0; i < count; i++) {
-		ptr[i] = zctap_alloc_memory(opt.sz, opt.memtype);
-		CHECK(ptr[i]);
+		CHECK(ptr[i] = util_alloc_memory(opt.sz, opt.memtype));
 
-		CHK_ERR(zctap_register_memory(ctx, ptr[i], opt.sz,
-					       opt.memtype));
+		CHK_ERR(util_register_memory(ctx, ptr[i], opt.sz, opt.memtype));
 	}
 
 	return ctx;
@@ -86,19 +84,23 @@ close_ctx(struct zctap_ctx *ctx, int count, void *ptr[])
 	zctap_close_ctx(&ctx);
 
 	for (i = 0; i < count; i++)
-		zctap_free_memory(ptr[i], opt.sz, opt.memtype);
+		util_free_memory(ptr[i], opt.sz, opt.memtype);
 }
 
 static void
 test_one(int queue_id)
 {
+	struct zctap_ifq_param ifq_param;
 	struct zctap_ctx *ctx = NULL;
 	struct zctap_ifq *ifq = NULL;
 	void *ptr[2];
 
 	ctx = setup_ctx(array_size(ptr), ptr);
 
-	CHK_ERR(zctap_open_ifq(&ifq, ctx, queue_id, opt.fill_entries));
+	zctap_init_ifq_param(&ifq_param, false);
+	ifq_param.queue_id = queue_id;
+	ifq_param.fill.entries = opt.fill_entries;
+	CHK_ERR(zctap_open_ifq(&ifq, ctx, &ifq_param));
 	printf("returned queue %d\n", zctap_ifq_id(ifq));
 
 	zctap_close_ifq(&ifq);
@@ -108,6 +110,8 @@ test_one(int queue_id)
 static void
 test_ordering(void)
 {
+	struct zctap_socket_param socket_param;
+	struct zctap_ifq_param ifq_param;
 	struct zctap_ctx *ctx = NULL;
 	struct zctap_ifq *ifq = NULL;
 	struct zctap_skq *skq = NULL;
@@ -116,11 +120,15 @@ test_ordering(void)
 
 	ctx = setup_ctx(array_size(ptr), ptr);
 
-	CHK_ERR(zctap_open_ifq(&ifq, ctx, opt.queue_id, opt.fill_entries));
+	zctap_init_ifq_param(&ifq_param, false);
+	ifq_param.queue_id = opt.queue_id;
+	ifq_param.fill.entries = opt.fill_entries;
+	CHK_ERR(zctap_open_ifq(&ifq, ctx, &ifq_param));
 	printf("returned queue %d\n", zctap_ifq_id(ifq));
 
 	CHK_SYS(fd = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP));
-	CHK_ERR(zctap_attach_socket(&skq, ctx, fd, opt.nentries));
+	zctap_init_socket_param(&socket_param, opt.nentries);
+	CHK_ERR(zctap_attach_socket(&skq, ctx, fd, &socket_param));
 
 	close_ctx(ctx, array_size(ptr), ptr);
 	zctap_close_ifq(&ifq);

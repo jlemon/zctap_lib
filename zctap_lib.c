@@ -19,6 +19,7 @@
 #ifdef USE_CUDA
 #include "cuda.h"
 #include "cuda_runtime.h"
+#include "uapi/misc/zctap_cuda.h"
 #endif
 
 #define PAGE_SIZE	4096
@@ -27,17 +28,13 @@ struct zctap_skq {
 	struct shared_queue rx;
 	struct shared_queue cq;
 	struct shared_queue meta;
-	int ctx_fd;	/* XXX */
+	int socket_fd;
 };
 
 struct zctap_ifq {
 	int fd;
 	unsigned queue_id;
 	struct shared_queue fill;
-};
-
-struct zctap_mem {
-	int fd;
 };
 
 struct zctap_ctx {
@@ -50,8 +47,8 @@ static void
 zctap_debug_queue(const char *name, struct shared_queue *q)
 {
 	printf("queue %s:\n", name);
-	printf("  producer: %u  %u\n", q->cached_prod, *q->prod);
-	printf("  consumer: %u  %u\n", q->cached_cons, *q->cons);
+	printf("  producer: %u	%u\n", q->cached_prod, *q->prod);
+	printf("  consumer: %u	%u\n", q->cached_cons, *q->cons);
 }
 
 void
@@ -101,6 +98,10 @@ zctap_mmap_socket(int fd, struct zctap_skq *skq,
 	if (rc)
 		return rc;
 
+	rc = zctap_mmap_queue(fd, &skq->meta, &p->meta);
+	if (rc)
+		return rc;
+
 	return 0;
 }
 
@@ -140,7 +141,7 @@ zctap_populate_meta(struct zctap_skq *skq, uint64_t addr, int count, int size)
 }
 
 int
-zctap_get_rx_batch(struct zctap_skq *skq, struct iovec *iov[], int count)
+zctap_get_rx_batch(struct zctap_skq *skq, struct zctap_iovec *iov[], int count)
 {
 	return sq_cons_batch(&skq->rx, (void **)iov, count);
 }
@@ -157,11 +158,11 @@ zctap_recycle_buffer(struct zctap_ifq *ifq, void *ptr)
 	uint64_t *addrp;
 
 	addrp = sq_prod_reserve(&ifq->fill);
-	*addrp = (uint64_t)ptr & ~(PAGE_SIZE - 1);
+	*addrp = (uint64_t)ptr;
 }
 
 bool
-zctap_recycle_batch(struct zctap_ifq *ifq, struct iovec **iov, int count)
+zctap_recycle_batch(struct zctap_ifq *ifq, struct zctap_iovec **iov, int count)
 {
 	uint64_t *addrp;
 	int i;
@@ -171,7 +172,7 @@ zctap_recycle_batch(struct zctap_ifq *ifq, struct iovec **iov, int count)
 
 	for (i = 0; i < count; i++) {
 		addrp = sq_prod_get_ptr(&ifq->fill);
-		*addrp = (uint64_t)iov[i]->iov_base & ~(PAGE_SIZE - 1);
+		*addrp = iov[i]->base;
 	}
 	return true;
 }
@@ -188,7 +189,7 @@ zctap_recycle_meta(struct zctap_skq *skq, void *ptr)
 	uint64_t *addrp;
 
 	addrp = sq_prod_reserve(&skq->meta);
-	*addrp = (uint64_t)ptr;		/* XXX should mask here */
+	*addrp = (uint64_t)ptr;
 }
 
 void
@@ -215,31 +216,40 @@ zctap_detach_socket(struct zctap_skq **skqp)
 	*skqp = NULL;
 }
 
+void
+zctap_init_socket_param(struct zctap_socket_param *p, int nentries)
+{
+	memset(p, 0, sizeof*(p));
+
+	p->rx.entries = nentries;
+	p->cq.entries = nentries;
+	p->meta.entries = nentries;
+
+	p->meta_bufsz = 256;
+	p->inline_max = 0;
+}
+
 int
 zctap_attach_socket(struct zctap_skq **skqp, struct zctap_ctx *ctx, int fd,
-		    int nentries)
+		    struct zctap_socket_param *p)
 {
-	struct zctap_socket_param p;
 	struct zctap_skq *skq;
-	int one = 1;
+	int val = 3;
 	int err;
 
 	skq = malloc(sizeof(*skq));
 	if (!skq)
 		return -ENOMEM;
 	memset(skq, 0, sizeof(*skq));
-	skq->ctx_fd = ctx->fd;
+	skq->socket_fd = fd;
 
-	memset(&p, 0, sizeof(p));
-	p.fd = fd;
+	p->zctap_fd = ctx->fd;
+	p->socket_fd = fd;
+	p->rx.elt_sz = sizeof(struct zctap_iovec);
+	p->cq.elt_sz = sizeof(uint64_t);
+	p->meta.elt_sz = sizeof(uint64_t);
 
-	p.rx.elt_sz = sizeof(struct iovec);
-	p.rx.entries = nentries;
-
-	p.cq.elt_sz = sizeof(uint64_t);
-	p.cq.entries = nentries;
-
-	if (setsockopt(fd, SOL_SOCKET, SO_ZEROCOPY, &one, sizeof(one)))
+	if (setsockopt(fd, SOL_SOCKET, SO_ZEROCOPY, &val, sizeof(val)))
 		err_exit("setsockopt(SO_ZEROCOPY)");
 
 	/* for TX - specify outgoing device */
@@ -247,48 +257,15 @@ zctap_attach_socket(struct zctap_skq **skqp, struct zctap_ctx *ctx, int fd,
 		       sizeof(ctx->ifindex)))
 		err_exit("setsockopt(SO_BINDTOIFINDEX)");
 
-	/* attaches sk to ctx and sets up custom data_ready hook */
-	if (ioctl(ctx->fd, ZCTAP_CTX_IOCTL_ATTACH_SOCKET, &p))
-		err_exit("ioctl(ATTACH_SOCKET)");
+	err = zctap(ZCTAP_ATTACH_SOCKET, p, sizeof(*p));
+	if (err < 0)
+		err_exit("ATTACH_SOCKET");
 
-	err = zctap_mmap_socket(fd, skq, &p);
+	err = zctap_mmap_socket(fd, skq, p);
 	if (err)
 		err_with(-err, "zctap_mmap_socket");
 
 	*skqp = skq;
-
-	return 0;
-}
-
-int
-zctap_add_meta(struct zctap_skq *skq, int fd, void *addr, size_t len,
-	       int nentries, int meta_len)
-{
-	struct zctap_socket_param p;
-	int rc;
-
-	if (skq->meta.entries)
-		return -EALREADY;
-
-	memset(&p, 0, sizeof(p));
-	p.fd = fd;
-	p.resv = 1;
-	p.iov.iov_base = addr;
-	p.iov.iov_len = len;
-	p.meta.elt_sz = sizeof(uint64_t);
-	p.meta.entries = nentries;
-	p.meta_len = meta_len;
-
-	/* attaches sk to ctx and sets up custom data_ready hook */
-	if (ioctl(skq->ctx_fd, ZCTAP_CTX_IOCTL_ATTACH_SOCKET, &p))
-		err_exit("ioctl(ATTACH_META)");
-
-	rc = zctap_mmap_queue(fd, &skq->meta, &p.meta);
-	if (rc)
-		return rc;
-
-#define DLEN(_q) _q.data, _q.data + (_q.entries * _q.elt_sz)
-	printf("skq.meta: [%p-%p]\n", DLEN(skq->meta));
 
 	return 0;
 }
@@ -312,38 +289,48 @@ zctap_ifq_id(struct zctap_ifq *ifq)
 	return ifq->queue_id;
 }
 
+void
+zctap_init_ifq_param(struct zctap_ifq_param *p, bool is_tcp)
+{
+	memset(p, 0, sizeof(*p));
+
+	p->queue_id = -1;
+	p->fill.entries = 10240;
+	p->fill_bufsz = PAGE_SIZE;
+	p->split = ZCTAP_SPLIT_NONE;
+	if (is_tcp)
+		p->split_offset = (14 + 40 + (20 + 20));	// TCP6
+	else
+		p->split_offset = (14 + 40 + 8);		// UDP6
+}
+
 int
 zctap_open_ifq(struct zctap_ifq **ifqp, struct zctap_ctx *ctx,
-	       int queue_id, int fill_entries)
+	       struct zctap_ifq_param *p)
 {
-	struct zctap_ifq_param p;
 	struct zctap_ifq *ifq;
-	int err;
+	int fd, err;
 
 	ifq = malloc(sizeof(*ifq));
 	if (!ifq)
 		return -ENOMEM;
 	memset(ifq, 0, sizeof(*ifq));
 
-	memset(&p, 0, sizeof(p));
-	p.queue_id = queue_id;
-	p.fill.elt_sz = sizeof(uint64_t);
-	p.fill.entries = fill_entries;
+	/* not user settable */
+	p->fill.elt_sz = sizeof(uint64_t);
+	p->zctap_fd = ctx->fd;
 
-	p.hdsplit = ZCTAP_SPLIT_OFFSET;
-//	p.split_offset = (14 + 40 + (20 + 20));		// TCP6
-	p.split_offset = (14 + 40 + 8);			// UDP6
-
-	if (ioctl(ctx->fd, ZCTAP_CTX_IOCTL_BIND_QUEUE, &p)) {
+	fd = zctap(ZCTAP_BIND_QUEUE, p, sizeof(*p));
+	if (fd < 0) {
 		err = -errno;
 		free(ifq);
 		return err;
 	}
 
-	ifq->fd = p.ifq_fd;
-	ifq->queue_id = p.queue_id;
+	ifq->fd = fd;
+	ifq->queue_id = p->queue_id;
 
-	err = zctap_mmap_ifq(ifq, &p);
+	err = zctap_mmap_ifq(ifq, p);
 	if (err) {
 		close(ifq->fd);
 		free(ifq);
@@ -355,44 +342,41 @@ zctap_open_ifq(struct zctap_ifq **ifqp, struct zctap_ctx *ctx,
 }
 
 int
-zctap_attach_region(struct zctap_ctx *ctx, struct zctap_mem *mem, int idx)
+zctap_create_host_region(void *ptr, size_t sz)
 {
-	struct zctap_attach_param p;
+	struct zctap_host_param p;
+	int ret;
 
-	p.mem_fd = mem->fd;
-	p.mem_idx = idx;
+	p.iov.iov_base = ptr;
+	p.iov.iov_len = sz;
 
-	if (ioctl(ctx->fd, ZCTAP_CTX_IOCTL_ATTACH_REGION, &p))
-		return -errno;
+	ret = zctap(ZCTAP_CREATE_HOST_REGION, &p, sizeof(p));
+	if (ret < 0)
+		ret = -errno;
 
-	return 0;
+	return ret;
 }
 
 int
-zctap_register_memory(struct zctap_ctx *ctx, void *va, size_t size,
-		      enum zctap_memtype memtype)
+zctap_region_from_dmabuf(int provider_fd, void *ptr)
 {
-	int idx, err;
+	struct zctap_dmabuf_param p;
+	int ret;
 
-	if (!ctx->mem) {
-		err = zctap_open_memarea(&ctx->mem);
-		if (err)
-			return err;
-	}
-	idx = zctap_add_memarea(ctx->mem, va, size, memtype);
-	if (idx < 0)
-		return idx;
+	p.provider_fd = provider_fd;
+	p.addr = (uintptr_t)ptr;
 
-	return zctap_attach_region(ctx, ctx->mem, idx);
+	ret = zctap(ZCTAP_REGION_FROM_DMABUF, &p, sizeof(p));
+	if (ret == -1)
+		ret = -errno;
+
+	return ret;
 }
 
 void
 zctap_close_ctx(struct zctap_ctx **ctxp)
 {
 	struct zctap_ctx *ctx = *ctxp;
-
-	if (ctx->mem)
-		zctap_close_memarea(&ctx->mem);
 
 	close(ctx->fd);
 	free(ctx);
@@ -402,6 +386,7 @@ zctap_close_ctx(struct zctap_ctx **ctxp)
 int
 zctap_open_ctx(struct zctap_ctx **ctxp, const char *ifname)
 {
+	struct zctap_context_param p;
 	struct zctap_ctx *ctx;
 	int err;
 
@@ -417,13 +402,13 @@ zctap_open_ctx(struct zctap_ctx **ctxp, const char *ifname)
 		goto out;
 	}
 
-	ctx->fd = open("/dev/zctap", O_RDWR);
-	if (ctx->fd == -1)
-		err_exit("open(/dev/zctap)");
+	p.ifindex = ctx->ifindex;
 
-	if (ioctl(ctx->fd, ZCTAP_CTX_IOCTL_ATTACH_DEV, &ctx->ifindex))
-		err_exit("ioctl(ATTACH_DEV)");
-
+	ctx->fd = zctap(ZCTAP_CREATE_CONTEXT, &p, sizeof(p));
+	if (ctx->fd == -1) {
+		err = -errno;
+		goto out;
+	}
 	*ctxp = ctx;
 	return 0;
 
@@ -433,55 +418,73 @@ out:
 }
 
 int
-zctap_add_memarea(struct zctap_mem *mem, void *va, size_t size,
-		  enum zctap_memtype memtype)
+zctap_attach_region(struct zctap_ctx *ctx, int region_fd)
 {
-	struct zctap_region_param p;
-	int idx;
+	struct zctap_attach_param p;
+	int err;
 
-	p.iov.iov_base = va;
-	p.iov.iov_len = size;
-	p.memtype = memtype;
+	p.zctap_fd = ctx->fd;
+	p.region_fd = region_fd;
 
-	idx = ioctl(mem->fd, ZCTAP_MEM_IOCTL_ADD_REGION, &p);
-	if (idx < 0)
-		idx = -errno;
+	err = zctap(ZCTAP_ATTACH_REGION, &p, sizeof(p));
+	if (err < 0)
+		err = -errno;
 
-	return idx;
+	return err;
 }
 
-void
-zctap_close_memarea(struct zctap_mem **memp)
-{
-	struct zctap_mem *mem = *memp;
-
-	close(mem->fd);
-	free(mem);
-	*memp = NULL;
-}
-
-/* XXX change so memory areas are always of one type? */
 int
-zctap_open_memarea(struct zctap_mem **memp)
+zctap_attach_meta_region(struct zctap_ctx *ctx, int region_fd)
 {
-	struct zctap_mem *mem;
+	struct zctap_attach_param p;
+	int err;
 
-	mem = malloc(sizeof(*mem));
-	if (!mem)
-		return -ENOMEM;
-	memset(mem, 0, sizeof(*mem));
+	p.zctap_fd = ctx->fd;
+	p.region_fd = region_fd;
 
-	mem->fd = open("/dev/zctap_mem", O_RDWR);
-	if (mem->fd == -1)
-		err_exit("open(/dev/zctap_mem)");
+	err = zctap(ZCTAP_ATTACH_META_REGION, &p, sizeof(p));
+	if (err < 0)
+		err = -errno;
 
-	*memp = mem;
+	return err;
+}
 
-	return 0;
+int
+zctap_add_meta(struct zctap_ctx *ctx, void *ptr, size_t sz)
+{
+	int fd, err;
+
+	printf("creating host region\n");
+	fd = zctap_create_host_region(ptr, sz);
+	if (fd < 0)
+		return fd;
+
+	printf("attaching host region as meta\n");
+	err = zctap_attach_meta_region(ctx, fd);
+
+	printf("Done\n");
+
+	close(fd);
+	return err;
+}
+
+int
+zctap_register_host_memory(struct zctap_ctx *ctx, void *va, size_t sz)
+{
+	int fd, err;
+
+	fd = zctap_create_host_region(va, sz);
+	if (fd < 0)
+		return fd;
+
+	err = zctap_attach_region(ctx, fd);
+
+	close(fd);
+	return err;
 }
 
 static void *
-zctap_alloc_host_memory(size_t size)
+util_alloc_host_memory(size_t size)
 {
 	void *addr;
 
@@ -499,7 +502,7 @@ zctap_alloc_host_memory(size_t size)
 }
 
 static void
-zctap_free_host_memory(void *area, size_t size)
+util_free_host_memory(void *area, size_t size)
 {
 	munmap(area, size);
 }
@@ -533,12 +536,11 @@ pin_buffer(void *ptr, size_t size)
 }
 
 static void *
-zctap_alloc_cuda_memory(size_t size)
+util_alloc_cuda_memory(size_t size)
 {
 	void *gpu;
 	uint64_t id;
 
-	printf("allocating %ld from gpu...\n", size);
 	CHK_CUDA(cudaMalloc(&gpu, size));
 
 	id = pin_buffer(gpu, size);
@@ -547,35 +549,88 @@ zctap_alloc_cuda_memory(size_t size)
 }
 
 static void *
-zctap_free_cuda_memory(void *area, size_t size)
+util_free_cuda_memory(void *area, size_t size)
 {
-	printf("freeing %ld from gpu...\n", size);
 	CHK_CUDA(cudaFree(area));
+}
+
+int
+util_create_cuda_dmabuf(void *ptr, size_t sz)
+{
+	struct zctap_cuda_dmabuf_param p;
+	int fd, err;
+
+	fd = open("/dev/zctap_cuda", O_RDWR);
+	if (fd < 0)
+		return -errno;
+
+	p.iov.iov_base = ptr;
+	p.iov.iov_len = sz;
+	err = ioctl(fd, ZCTAP_CUDA_IOCTL_CREATE_DMABUF, &p);
+
+	close(fd);
+	return err;
 }
 #endif
 
+int
+util_create_region(void *ptr, size_t sz, enum zctap_memtype memtype)
+{
+	int err = -EOPNOTSUPP;
+	int fd;
+
+	if (memtype == MEMTYPE_HOST)
+		err = zctap_create_host_region(ptr, sz);
+#ifdef USE_CUDA
+	else if (memtype == MEMTYPE_CUDA) {
+		fd = util_create_cuda_dmabuf(ptr, sz);
+		if (fd < 0)
+			return fd;
+		err = zctap_region_from_dmabuf(fd, ptr);
+		close(fd);
+	}
+#endif
+	return err;
+}
+
+int
+util_register_memory(struct zctap_ctx *ctx, void *ptr, size_t sz,
+		     enum zctap_memtype memtype)
+{
+	int fd, err;
+
+	fd = util_create_region(ptr, sz, memtype);
+	if (fd < 0)
+		return fd;
+
+	err = zctap_attach_region(ctx, fd);
+
+	close(fd);
+	return err;
+}
+
 void *
-zctap_alloc_memory(size_t size, enum zctap_memtype memtype)
+util_alloc_memory(size_t size, enum zctap_memtype memtype)
 {
 	void *area = NULL;
 
 	if (memtype == MEMTYPE_HOST)
-		area = zctap_alloc_host_memory(size);
+		area = util_alloc_host_memory(size);
 #ifdef USE_CUDA
 	else if (memtype == MEMTYPE_CUDA)
-		area = zctap_alloc_cuda_memory(size);
+		area = util_alloc_cuda_memory(size);
 #endif
 	return area;
 }
 
 void
-zctap_free_memory(void *area, size_t size, enum zctap_memtype memtype)
+util_free_memory(void *area, size_t size, enum zctap_memtype memtype)
 {
 	if (memtype == MEMTYPE_HOST)
-		zctap_free_host_memory(area, size);
+		util_free_host_memory(area, size);
 #ifdef USE_CUDA
 	else if (memtype == MEMTYPE_CUDA)
-		zctap_free_cuda_memory(area, size);
+		util_free_cuda_memory(area, size);
 #endif
 	else
 		stop_here("Unhandled memtype: %d", memtype);

@@ -1,11 +1,11 @@
 
 include ../compile.mk
 
-INC = -I..
+INC = -I.. -I../..
 LIBS = -L.. -lzctap $(EXTRA_LIBS)
 CFLAGS = -g $(OPTS) $(INC) $(DEFINES)
 
-targets := memarea context dmamap socket netqueue send recv
+targets := region context socket netqueue send recv
 
 all: $(targets)
 

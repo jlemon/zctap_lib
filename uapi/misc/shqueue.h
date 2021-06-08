@@ -20,35 +20,51 @@ struct shared_queue {
 	void *map_ptr;
 };
 
+#define SMP_ACQREL	0
+
 /*
- * see documenation in tools/include/linux/ring_buffer.h
- * using  explicit smp_/_ONCE is an optimization over smp_{store|load}
+ * see documentation in tools/include/linux/ring_buffer.h
  */
 
-static inline void __sq_load_acquire_cons(struct shared_queue *q)
+/* consumer pointer is a control dependency - only the pointer itself is
+ * used, and data is not accessed, so no memory barriers are needed.
+ * thus no acquire semantics.
+ */
+static inline void __sq_load_cons(struct shared_queue *q)
 {
 	/* Refresh the local tail pointer */
-	q->cached_cons = READ_ONCE(*q->cons);
-	/* A, matches D */
+	q->cached_cons = READ_ONCE(*q->cons);		/* A, matches D */
 }
 
 static inline void __sq_store_release_cons(struct shared_queue *q)
 {
+#if SMP_ACQREL
+	smp_store_release(q->cons, q->cached_cons);	/* D, matches A */
+#else
 	smp_mb(); /* D, matches A */
 	WRITE_ONCE(*q->cons, q->cached_cons);
+#endif
 }
 
 static inline void __sq_load_acquire_prod(struct shared_queue *q)
 {
 	/* Refresh the local pointer */
+#if SMP_ACQREL
+	q->cached_prod = smp_load_acquire(q->prod);	/* C, matches B */
+#else
 	q->cached_prod = READ_ONCE(*q->prod);
 	smp_rmb(); /* C, matches B */
+#endif
 }
 
 static inline void __sq_store_release_prod(struct shared_queue *q, unsigned v)
 {
+#if SMP_ACQREL
+	smp_store_release(q->prod, v);			/* B, matches C */
+#else
 	smp_wmb(); /* B, matches C */
 	WRITE_ONCE(*q->prod, v);
+#endif
 }
 
 static inline void sq_cons_refresh(struct shared_queue *q)
@@ -163,7 +179,7 @@ static inline unsigned sq_prod_space(struct shared_queue *q)
 
 	space = __sq_prod_space(q);
 	if (!space) {
-		__sq_load_acquire_cons(q);
+		__sq_load_cons(q);
 		space = __sq_prod_space(q);
 	}
 	return space;
@@ -173,7 +189,7 @@ static inline bool sq_prod_avail(struct shared_queue *q, unsigned count)
 {
 	if (count <= __sq_prod_space(q))
 		return true;
-	__sq_load_acquire_cons(q);
+	__sq_load_cons(q);
 	return count <= __sq_prod_space(q);
 }
 

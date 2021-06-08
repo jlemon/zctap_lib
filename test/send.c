@@ -110,11 +110,9 @@ setup_ctx(int count, void *ptr[])
 	CHK_ERR(zctap_open_ctx(&ctx, opt.ifname));
 
 	for (i = 0; i < count; i++) {
-		ptr[i] = zctap_alloc_memory(opt.sz, opt.memtype);
-		CHECK(ptr[i]);
+		CHECK(ptr[i] = util_alloc_memory(opt.sz, opt.memtype));
 
-		CHK_ERR(zctap_register_memory(ctx, ptr[i], opt.sz,
-					       opt.memtype));
+		CHK_ERR(util_register_memory(ctx, ptr[i], opt.sz, opt.memtype));
 	}
 
 	return ctx;
@@ -128,7 +126,7 @@ close_ctx(struct zctap_ctx *ctx, int count, void *ptr[])
 	zctap_close_ctx(&ctx);
 
 	for (i = 0; i < count; i++)
-		zctap_free_memory(ptr[i], opt.sz, opt.memtype);
+		util_free_memory(ptr[i], opt.sz, opt.memtype);
 }
 
 void
@@ -159,7 +157,7 @@ show_node_addr(struct node *node)
 	    (node->family == AF_INET) ? sizeof(struct sockaddr_in) :
 					sizeof(struct sockaddr_in6),
 	    host, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
-	CHECK_MSG(rc == 0, "getnameinfo: %s", gai_strerror(rc));
+	CHK_MSG(rc == 0, "getnameinfo: %s", gai_strerror(rc));
 	return host;
 }
 
@@ -175,7 +173,7 @@ name2addr(const char *name, struct node *node, bool local)
 	node->addrlen = 0;
 
 	rc = getaddrinfo(name, NULL, &hints, &result);
-	CHECK_MSG(rc == 0, "getaddrinfo: %s", gai_strerror(rc));
+	CHK_MSG(rc == 0, "getaddrinfo: %s", gai_strerror(rc));
 
 	for (ai = result; ai != NULL; ai = ai->ai_next) {
 		if (!local)
@@ -227,7 +225,7 @@ net_connect(int fd, const char *hostname, short port)
 	node.family = AF_INET6;
 	node.socktype = SOCK_STREAM;
 	if (!name2addr(hostname, &node, false))
-		CHECK_MSG(1, "could not get IP of %s", hostname);
+		CHK_MSG(1, "could not get IP of %s", hostname);
 
 	set_port(&node, port);
 
@@ -247,7 +245,7 @@ static void
 send_loop(int fd, struct zctap_skq *skq, uint64_t addr)
 {
 	uint8_t cbuf[CMSG_SPACE(sizeof(uint64_t))];
-	bool busy[N_SLICES];
+	bool busy[N_SLICES] = { };
 	struct cmsghdr *cmsg;
 	struct iovec iov;
 	struct msghdr msg = {
@@ -285,7 +283,7 @@ send_loop(int fd, struct zctap_skq *skq, uint64_t addr)
 		while (busy[slice]) {
 			if (zctap_get_cq_batch(skq, &notify, 1)) {
 				n = *notify % N_SLICES;
-				CHECK_MSG(busy[n], "Slice %d !busy\n", n);
+				CHK_MSG(busy[n], "Slice %d !busy\n", n);
 				busy[n] = false;
 				run.bytes_reclaimed += (count * sz);
 				run.notify_count--;
@@ -302,8 +300,9 @@ send_loop(int fd, struct zctap_skq *skq, uint64_t addr)
 		for (i = 0; i < count - 1; i++) {
 			iov.iov_base = (void *)(base + i * sz);
 			CHK_INTR(n = sendmsg(fd, &msg, MSG_ZCTAP), out);
+			if (n != sz) goto out;
 			CHECK(n == sz);
-			run.bytes_submitted += sz;
+			run.bytes_submitted += n;
 		}
 
 		iov.iov_base = (void *)(base + i * sz);
@@ -320,7 +319,7 @@ send_loop(int fd, struct zctap_skq *skq, uint64_t addr)
 
 		if (zctap_get_cq_batch(skq, &notify, 1)) {
 			n = *notify % N_SLICES;
-			CHECK_MSG(busy[n], "Slice %d !busy\n", n);
+			CHK_MSG(busy[n], "Slice %d !busy\n", n);
 			busy[n] = false;
 			run.bytes_reclaimed += (count * sz);
 			run.notify_count--;
@@ -368,6 +367,8 @@ statistics(unsigned long elapsed_ns)
 static void
 test_send(const char *hostname, short port)
 {
+	struct zctap_socket_param socket_param;
+	struct zctap_ifq_param ifq_param;
 	struct zctap_ctx *ctx;
 	struct zctap_ifq *ifq;
 	struct zctap_skq *skq;
@@ -379,17 +380,20 @@ test_send(const char *hostname, short port)
 	ctx = setup_ctx(array_size(ptr), ptr);
 
 	sz = opt.fill_entries * 4096;
-	pktbuf = zctap_alloc_memory(sz, opt.memtype);
-	CHECK(pktbuf);
-	CHK_ERR(zctap_register_memory(ctx, pktbuf, sz, opt.memtype));
-	CHK_ERR(zctap_open_ifq(&ifq, ctx, opt.queue_id, opt.fill_entries));
+	CHECK(pktbuf = util_alloc_memory(sz, opt.memtype));
+	CHK_ERR(util_register_memory(ctx, pktbuf, sz, opt.memtype));
+	zctap_init_ifq_param(&ifq_param, !opt.udp_proto);
+	ifq_param.queue_id = opt.queue_id;
+	ifq_param.fill.entries = opt.fill_entries;
+	CHK_ERR(zctap_open_ifq(&ifq, ctx, &ifq_param));
 	zctap_populate_ring(ifq, (uint64_t)pktbuf, opt.fill_entries);
 
 	if (opt.udp_proto)
 		CHK_SYS(fd = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP));
 	else
 		CHK_SYS(fd = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP));
-	CHK_ERR(zctap_attach_socket(&skq, ctx, fd, opt.nentries));
+	zctap_init_socket_param(&socket_param, opt.nentries);
+	CHK_ERR(zctap_attach_socket(&skq, ctx, fd, &socket_param));
 
 	net_connect(fd, hostname, port);
 

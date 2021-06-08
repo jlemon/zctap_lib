@@ -51,7 +51,7 @@ test_normal(size_t sz, int count)
 
 	for (i = 0; i < count; i++) {
 		CHECK(ptr[i] = util_alloc_memory(sz, opt.memtype));
-		CHK_ERR(idx[i] = zctap_create_host_region(ptr[i], sz));
+		CHK_ERR(idx[i] = util_create_region(ptr[i], sz, opt.memtype));
 	}
 
 	for (i = 0; i < count; i++)
@@ -76,18 +76,18 @@ test_overlap(size_t sz)
 
 	CHECK(ptr = util_alloc_memory(sz, opt.memtype));
 
-	CHK_ERR(idx[0] = zctap_create_host_region(ptr, half));
+	CHK_ERR(idx[0] = util_create_region(ptr, half, opt.memtype));
 
-	idx[1] = zctap_create_host_region(ptr, half);
+	idx[1] = util_create_region(ptr, half, opt.memtype);
 	CHECK(idx[1] == -EEXIST);
 
-	idx[1] = zctap_create_host_region(ptr + (half/2), (half/2));
+	idx[1] = util_create_region(ptr + (half/2), (half/2), opt.memtype);
 	CHECK(idx[1] == -EEXIST);
 
-	idx[1] = zctap_create_host_region(ptr + (half/2), half);
+	idx[1] = util_create_region(ptr + (half/2), half, opt.memtype);
 	CHECK(idx[1] == -EEXIST);
 
-	CHK_ERR(idx[1] = zctap_create_host_region(ptr + half, half));
+	CHK_ERR(idx[1] = util_create_region(ptr + half, half, opt.memtype));
 
 	CHK_SYS(close(idx[0]));
 	CHK_SYS(close(idx[1]));

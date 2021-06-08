@@ -1,7 +1,7 @@
 #!/bin/bash
 
 function mod_refs() {
-    local count=$(lsmod | grep ^netgpu | awk '{$s += $3} END {print $s}')
+    local count=$(lsmod | grep ^zctap | awk '{$s += $3} END {print $s}')
     echo $(($count + 0))
 }
 
@@ -36,9 +36,8 @@ function check() {
 function test_suite() {
     local args="$1"
 
-    check ./memarea $args
+    check ./region $args
     check ./context $args
-    check ./dmamap $args
     check ./socket $args
     check ./netqueue $args
 }
