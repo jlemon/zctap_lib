@@ -454,15 +454,11 @@ zctap_add_meta(struct zctap_ctx *ctx, void *ptr, size_t sz)
 {
 	int fd, err;
 
-	printf("creating host region\n");
 	fd = zctap_create_host_region(ptr, sz);
 	if (fd < 0)
 		return fd;
 
-	printf("attaching host region as meta\n");
 	err = zctap_attach_meta_region(ctx, fd);
-
-	printf("Done\n");
 
 	close(fd);
 	return err;
@@ -548,7 +544,7 @@ util_alloc_cuda_memory(size_t size)
 	return gpu;
 }
 
-static void *
+static void
 util_free_cuda_memory(void *area, size_t size)
 {
 	CHK_CUDA(cudaFree(area));
