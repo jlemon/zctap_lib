@@ -110,7 +110,7 @@ setup_ctx(int count, void *ptr[])
 	CHK_ERR(zctap_open_ctx(&ctx, opt.ifname));
 
 	for (i = 0; i < count; i++) {
-		CHECK(ptr[i] = util_alloc_memory(opt.sz, opt.memtype));
+		CHK_FOR(ptr[i] = util_alloc_memory(opt.sz, opt.memtype));
 
 		CHK_ERR(util_register_memory(ctx, ptr[i], opt.sz, opt.memtype));
 	}
@@ -134,7 +134,7 @@ set_blocking_mode(int fd, bool on)
 {
 	int flag;
 
-	CHECK((flag = fcntl(fd, F_GETFL)) != -1);
+	CHK_FOR((flag = fcntl(fd, F_GETFL)) != -1);
 
 	if (on)
 		flag &= ~O_NONBLOCK;
@@ -144,7 +144,7 @@ set_blocking_mode(int fd, bool on)
 	CHK_SYS(fcntl(fd, F_SETFL, flag));
 
 	flag = fcntl(fd, F_GETFL);
-	CHECK(!(flag & O_NONBLOCK) == on);
+	CHK_FOR(!(flag & O_NONBLOCK) == on);
 }
 
 const char *
@@ -288,12 +288,12 @@ send_loop(int fd, struct zctap_skq *skq, uint64_t addr)
 				run.bytes_reclaimed += (count * sz);
 				run.notify_count--;
 			} else {
-				CHECK(!wait_ns);
+				CHK_FOR(!wait_ns);
 				wait_ns = nsec();
 				CHK_INTR(n = epoll_wait(ep, &ev, 1, -1), out);
 				run.wait_ns += elapsed(wait_ns);
 				run.wait_count++;
-				CHECK(n != 0);
+				CHK_FOR(n != 0);
 			}
 		}
 		base = addr + (slice * count * sz);
@@ -301,7 +301,7 @@ send_loop(int fd, struct zctap_skq *skq, uint64_t addr)
 			iov.iov_base = (void *)(base + i * sz);
 			CHK_INTR(n = sendmsg(fd, &msg, MSG_ZCTAP), out);
 			if (n != sz) goto out;
-			CHECK(n == sz);
+			CHK_FOR(n == sz);
 			run.bytes_submitted += n;
 		}
 
@@ -309,7 +309,7 @@ send_loop(int fd, struct zctap_skq *skq, uint64_t addr)
 		msg.msg_controllen = cmsg->cmsg_len;
 		*data = loopc++;
 		CHK_SYS(n = sendmsg(fd, &msg, MSG_ZCTAP));
-		CHECK(n == sz);
+		CHK_FOR(n == sz);
 		msg.msg_controllen = 0;
 		run.bytes_submitted += sz;
 		run.notify_count++;
@@ -380,7 +380,7 @@ test_send(const char *hostname, short port)
 	ctx = setup_ctx(array_size(ptr), ptr);
 
 	sz = opt.fill_entries * 4096;
-	CHECK(pktbuf = util_alloc_memory(sz, opt.memtype));
+	CHK_FOR(pktbuf = util_alloc_memory(sz, opt.memtype));
 	CHK_ERR(util_register_memory(ctx, pktbuf, sz, opt.memtype));
 	zctap_init_ifq_param(&ifq_param, !opt.udp_proto);
 	ifq_param.queue_id = opt.queue_id;

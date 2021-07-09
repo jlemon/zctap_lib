@@ -68,7 +68,7 @@ setup_ctx(int count, void *ptr[])
 	CHK_ERR(zctap_open_ctx(&ctx, opt.ifname));
 
 	for (i = 0; i < count; i++) {
-		CHECK(ptr[i] = util_alloc_memory(opt.sz, opt.memtype));
+		CHK_FOR(ptr[i] = util_alloc_memory(opt.sz, opt.memtype));
 
 		CHK_ERR(util_register_memory(ctx, ptr[i], opt.sz, opt.memtype));
 	}

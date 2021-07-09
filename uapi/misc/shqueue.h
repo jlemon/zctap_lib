@@ -220,4 +220,27 @@ static inline void sq_prod_submit_n(struct shared_queue *q, unsigned count)
 		__sq_store_release_prod(q, prod);
 }
 
+static inline void sq_cons_set_wakeup(struct shared_queue *q)
+{
+	WRITE_ONCE(q->prod[1], 1);
+}
+
+static inline void sq_cons_clr_wakeup(struct shared_queue *q)
+{
+	WRITE_ONCE(q->prod[1], 0);
+}
+
+static inline bool sq_cons_has_wakeup(struct shared_queue *q)
+{
+	return READ_ONCE(q->prod[1]) & 1;
+}
+
+static inline bool sq_prod_was_updated(struct shared_queue *q)
+{
+	unsigned v = q->cached_prod;
+
+	__sq_load_acquire_prod(q);
+	return q->cached_prod != v;
+}
+
 #endif /* _UAPI_MISC_SHQUEUE_H */

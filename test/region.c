@@ -50,7 +50,7 @@ test_normal(size_t sz, int count)
 	int i;
 
 	for (i = 0; i < count; i++) {
-		CHECK(ptr[i] = util_alloc_memory(sz, opt.memtype));
+		CHK_FOR(ptr[i] = util_alloc_memory(sz, opt.memtype));
 		CHK_ERR(idx[i] = util_create_region(ptr[i], sz, opt.memtype));
 	}
 
@@ -74,18 +74,18 @@ test_overlap(size_t sz)
 	int idx[2];
 	size_t half = sz / 2;
 
-	CHECK(ptr = util_alloc_memory(sz, opt.memtype));
+	CHK_FOR(ptr = util_alloc_memory(sz, opt.memtype));
 
 	CHK_ERR(idx[0] = util_create_region(ptr, half, opt.memtype));
 
 	idx[1] = util_create_region(ptr, half, opt.memtype);
-	CHECK(idx[1] == -EEXIST);
+	CHK_FOR(idx[1] == -EEXIST);
 
 	idx[1] = util_create_region(ptr + (half/2), (half/2), opt.memtype);
-	CHECK(idx[1] == -EEXIST);
+	CHK_FOR(idx[1] == -EEXIST);
 
 	idx[1] = util_create_region(ptr + (half/2), half, opt.memtype);
-	CHECK(idx[1] == -EEXIST);
+	CHK_FOR(idx[1] == -EEXIST);
 
 	CHK_ERR(idx[1] = util_create_region(ptr + half, half, opt.memtype));
 
@@ -109,32 +109,32 @@ test_sanity(void)
 
 	/* parameter oversized */
 	rc = zctap(ZCTAP_CREATE_HOST_REGION, &p, sizeof(p));
-	CHECK(rc == -1 && errno == E2BIG);
+	CHK_FOR(rc == -1 && errno == E2BIG);
 
 	/* zero region length */
 	p.trash = 0;
 	rc = zctap(ZCTAP_CREATE_HOST_REGION, &p, sizeof(p));
-	CHECK(rc == -1 && errno == EINVAL);
+	CHK_FOR(rc == -1 && errno == EINVAL);
 
 	/* too short, so invalid length */
 	rc = zctap(ZCTAP_CREATE_HOST_REGION, &p, sizeof(void *));
-	CHECK(rc == -1 && errno == EINVAL);
+	CHK_FOR(rc == -1 && errno == EINVAL);
 
 	/* length is too short */
 	p.real.iov.iov_len = 1024;
 	rc = zctap(ZCTAP_CREATE_HOST_REGION, &p, sizeof(p));
-	CHECK(rc == -1 && errno == EINVAL);
+	CHK_FOR(rc == -1 && errno == EINVAL);
 
 	/* length is not page aligned */
 	p.real.iov.iov_len = 4096 + 1024;
 	rc = zctap(ZCTAP_CREATE_HOST_REGION, &p, sizeof(p));
-	CHECK(rc == -1 && errno == EINVAL);
+	CHK_FOR(rc == -1 && errno == EINVAL);
 
 	/* buffer is not page aligned */
 	p.real.iov.iov_base = (void *)0xdeadbeef;
 	p.real.iov.iov_len = 4096;
 	rc = zctap(ZCTAP_CREATE_HOST_REGION, &p, sizeof(p));
-	CHECK(rc == -1 && errno == EINVAL);
+	CHK_FOR(rc == -1 && errno == EINVAL);
 }
 
 int

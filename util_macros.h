@@ -46,7 +46,7 @@
 		ERROR_HERE(1, 0, __VA_ARGS__);				\
 })
 
-#define CHECK(val) ({							\
+#define CHK_FOR(val) ({							\
 	if (!(val))							\
 		ERROR_HERE(1, 0, "%s", #val);				\
 })

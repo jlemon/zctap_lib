@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/mman.h>
 #include <sys/param.h>
@@ -112,26 +113,36 @@ zctap_mmap_ifq(struct zctap_ifq *ifq, struct zctap_ifq_param *p)
 }
 
 static void
-zctap_populate(struct shared_queue *prod, uint64_t addr, int count, int size)
+zctap_poll_fd(int fd)
+{
+	struct pollfd pfd = { .fd = fd };
+
+	poll(&pfd, 1, 0);
+}
+
+static void
+zctap_populate(struct shared_queue *q, uint64_t addr, int count, int size)
 {
 	uint64_t *addrp;
 	int i;
 
 	/* ring entries will be power of 2. */
-	if (sq_prod_space(prod) < count)
+	if (sq_prod_space(q) < count)
 		err_exit("sq_prod_space");
 
 	for (i = 0; i < count; i++) {
-		addrp = sq_prod_reserve(prod);
+		addrp = sq_prod_reserve(q);
 		*addrp = (uint64_t)addr + i * size;
 	}
-	sq_prod_submit(prod);
+	sq_prod_submit(q);
 }
 
 void
 zctap_populate_ring(struct zctap_ifq *ifq, uint64_t addr, int count)
 {
 	zctap_populate(&ifq->fill, addr, count, PAGE_SIZE);
+	if (sq_cons_has_wakeup(&ifq->fill))
+		zctap_poll_fd(ifq->fd);
 }
 
 void
@@ -181,6 +192,8 @@ void
 zctap_recycle_complete(struct zctap_ifq *ifq)
 {
 	sq_prod_submit(&ifq->fill);
+	if (sq_cons_has_wakeup(&ifq->fill))
+		zctap_poll_fd(ifq->fd);
 }
 
 void

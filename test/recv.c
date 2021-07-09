@@ -123,7 +123,7 @@ set_blocking_mode(int fd, bool on)
 {
 	int flag;
 
-	CHECK((flag = fcntl(fd, F_GETFL)) != -1);
+	CHK_FOR((flag = fcntl(fd, F_GETFL)) != -1);
 
 	if (on)
 		flag &= ~O_NONBLOCK;
@@ -133,7 +133,7 @@ set_blocking_mode(int fd, bool on)
 	CHK_SYS(fcntl(fd, F_SETFL, flag));
 
 	flag = fcntl(fd, F_GETFL);
-	CHECK(!(flag & O_NONBLOCK) == on);
+	CHK_FOR(!(flag & O_NONBLOCK) == on);
 }
 
 const char *
@@ -556,7 +556,7 @@ recv_loop(int fd, struct zctap_skq *skq, struct zctap_ifq *ifq)
 					printf("RXQ iov == EOF, break...\n");
 					goto out;
 				}
-				CHECK(n != -1);
+				CHK_FOR(n != -1);
 #if 0
 				if (n == 0) {
 					printf("recv ret 0, EOF, break...\n");
@@ -598,7 +598,7 @@ serve_socket(int fd, struct zctap_ctx *ctx, struct zctap_ifq *ifq,
 	if (use_metadata) {
 		/* add memory area for metadata */
 		sz = opt.nentries * 256;
-		CHECK(pktbuf = util_alloc_memory(sz, MEMTYPE_HOST));
+		CHK_FOR(pktbuf = util_alloc_memory(sz, MEMTYPE_HOST));
 		CHK_ERR(zctap_add_meta(ctx, pktbuf, sz));
 
 		zctap_populate_meta(skq, (uint64_t)pktbuf, opt.nentries, 256);
@@ -629,7 +629,7 @@ test_recv(const char *hostname, short port)
 	CHK_ERR(zctap_open_ctx(&ctx, opt.ifname));
 
 	sz = opt.fill_entries * 4096;
-	CHECK(pktbuf = util_alloc_memory(sz, opt.memtype));
+	CHK_FOR(pktbuf = util_alloc_memory(sz, opt.memtype));
 	CHK_ERR(util_register_memory(ctx, pktbuf, sz, opt.memtype));
 	zctap_init_ifq_param(&ifq_param, !opt.udp_proto);
 	ifq_param.queue_id = opt.queue_id;

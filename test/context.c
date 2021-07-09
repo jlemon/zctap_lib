@@ -72,7 +72,7 @@ test_region(size_t sz)
 	void *ptr;
 	int r;
 
-	CHECK(ptr = util_alloc_memory(sz, opt.memtype));
+	CHK_FOR(ptr = util_alloc_memory(sz, opt.memtype));
 	CHK_ERR(r = util_create_region(ptr, sz, opt.memtype));
 
 	CHK_SYS(close(r));
@@ -86,7 +86,7 @@ test_mem(const char *ifname, size_t sz)
 	void *ptr;
 	int r;
 
-	CHECK(ptr = util_alloc_memory(sz, opt.memtype));
+	CHK_FOR(ptr = util_alloc_memory(sz, opt.memtype));
 	CHK_ERR(r = util_create_region(ptr, sz, opt.memtype));
 	CHK_ERR(zctap_open_ctx(&ctx, ifname));
 
@@ -103,8 +103,8 @@ test_mem2(const char *ifname, size_t sz)
 	struct zctap_ctx *ctx = NULL;
 	void *ptr1, *ptr2;
 
-	CHECK(ptr1 = util_alloc_memory(sz, opt.memtype));
-	CHECK(ptr2 = util_alloc_memory(sz, opt.memtype));
+	CHK_FOR(ptr1 = util_alloc_memory(sz, opt.memtype));
+	CHK_FOR(ptr2 = util_alloc_memory(sz, opt.memtype));
 
 	CHK_ERR(zctap_open_ctx(&ctx, ifname));
 	CHK_ERR(util_register_memory(ctx, ptr1, sz, opt.memtype));
@@ -122,7 +122,7 @@ test_sharing(const char *ifname, size_t sz)
 	void *ptr;
 	int r;
 
-	CHECK(ptr = util_alloc_memory(sz, opt.memtype));
+	CHK_FOR(ptr = util_alloc_memory(sz, opt.memtype));
 	CHK_ERR(r = util_create_region(ptr, sz, opt.memtype));
 
 	CHK_ERR(zctap_open_ctx(&ctx1, ifname));
@@ -150,7 +150,7 @@ test_ordering(const char *ifname, size_t sz)
 	int r, r2;
 	int err;
 
-	CHECK(ptr = util_alloc_memory(sz, opt.memtype));
+	CHK_FOR(ptr = util_alloc_memory(sz, opt.memtype));
 	CHK_ERR(r = util_create_region(ptr, sz, opt.memtype));
 
 	CHK_ERR(zctap_open_ctx(&ctx, ifname));
@@ -158,16 +158,16 @@ test_ordering(const char *ifname, size_t sz)
 
 	/* can't add memory region more than once */
 	err = zctap_attach_region(ctx, r);
-	CHECK(err == -EEXIST);
+	CHK_FOR(err == -EEXIST);
 
 	/* creating region over existing one is not allowed */
 	r2 = util_create_region(ptr, sz, opt.memtype);
-	CHECK(r2 == -EEXIST);
+	CHK_FOR(r2 == -EEXIST);
 
 	/* close region while in use */
 	CHK_SYS(close(r));
 
-	CHECK(ptr2 = util_alloc_memory(sz, opt.memtype));
+	CHK_FOR(ptr2 = util_alloc_memory(sz, opt.memtype));
 	CHK_ERR(util_register_memory(ctx, ptr2, sz, opt.memtype));
 
 	/* free memory while in use */
